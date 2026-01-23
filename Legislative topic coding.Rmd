@@ -1,0 +1,400 @@
+---
+title: "Legislative topic coding"
+author: "Jonathan Kellogg"
+date: "2025-08-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This is a document for legislative topic classification. It classifies each article of the law to increase classification accuracy and detect potential policy obfuscation through legislative procedure. For a longer discussion of this process please see my paper that accompanies this document. 
+
+
+##
+
+```{r}
+library(pacman)
+
+## Load (and install) packages needed for the analyses
+pacman::p_load(tidyverse,  
+               rmdformats) # Style the RMD HTML output)
+```
+
+## Load texts 
+
+```{r}
+# Install packages if not already installed
+install.packages("jsonlite")
+install.packages("data.table")
+
+library(jsonlite)
+library(data.table)
+
+# Path to your file
+file_path <- "/Users/jonathankellogg/Desktop/us_test_data_final_OFFICIAL.jsonl"
+
+
+# Read JSONL file
+json_data <- stream_in(file(file_path))
+
+# Convert to data frame
+df <- as.data.frame(json_data)
+
+# If you want a data.table instead
+dt <- as.data.table(json_data)
+
+# Quick check
+head(df)
+
+df$text
+```
+
+
+```{r}
+# Load needed package
+library(jsonlite)
+library(dplyr)
+library(purrr)
+library(tidyr)
+path <- "/Users/jonathankellogg/Desktop/dataset/train"
+files <- list.files(path, pattern = "\\.json$", full.names = TRUE)
+
+# Read all files into a list of named lists
+df_list <- map(files, function(f) {
+  json_data <- fromJSON(f, flatten = FALSE, simplifyVector = FALSE)
+  
+  # Force into a tibble row (list-cols for arrays)
+  tibble(
+    celex_id   = json_data$celex_id,
+    uri        = json_data$uri,
+    type       = json_data$type,
+    concepts   = list(json_data$concepts),   # list-column
+    title      = json_data$title,
+    header     = json_data$header,
+    recitals   = json_data$recitals,
+    main_body  = list(json_data$main_body),  # list-column
+    attachments= json_data$attachments
+  )
+})
+
+# Bind them all into one tibble
+df <- bind_rows(df_list)
+
+glimpse(df)
+
+df_long <- df %>%
+  unnest(main_body, keep_empty = TRUE) %>%
+  rename(paragraph = main_body)
+
+glimpse(df_long)
+
+
+```
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+# Step 1: Split text into sections using regex
+law_sections <- df %>%
+  rowwise() %>%
+  mutate(section = str_split(text, "\n")) %>%  # split whenever "SEC." appears
+  unnest(section) %>%                                  # expand into rows
+  mutate(section = str_trim(section)) %>%              # clean whitespace
+  filter(section != "") %>%                            # drop empty rows
+  ungroup()
+
+# Step 2: Keep the law title alongside each section
+law_sections <- law_sections %>%
+  select(bill_id, title, section)
+
+
+
+
+```
+
+```{r}
+library(httr)
+library(xml2)
+
+# Output folder
+dir.create("uk_legislation", showWarnings = FALSE)
+
+# Choose years + series
+years <- 1990:1991
+series <- "ukpga"   # ukpga = Public General Acts, uksi = Statutory Instruments
+
+# Function to get all Act URLs for a given year
+get_docs_in_year <- function(year, series) {
+  feed_url <- paste0("https://www.legislation.gov.uk/", series, "/", year, "/data.feed")
+  message("Fetching feed: ", feed_url)
+  
+  resp <- GET(feed_url)
+  if (status_code(resp) != 200) {
+    warning("No feed for ", year)
+    return(character())
+  }
+  
+  feed <- read_xml(content(resp, "text", encoding = "UTF-8"))
+  entries <- xml_find_all(feed, ".//ns:id", ns = xml_ns(feed))
+  urls <- xml_text(entries)
+  return(urls)
+}
+
+# Function to download XML for a document
+download_doc <- function(doc_url) {
+  xml_url <- paste0(doc_url, "/data.xml")
+  message("Downloading: ", xml_url)
+  
+  resp <- GET(xml_url)
+  if (status_code(resp) != 200) {
+    warning("Failed to fetch ", xml_url)
+    return(NULL)
+  }
+  
+  doc_id <- gsub("[/:]", "_", doc_url)
+  outfile <- file.path("uk_legislation", paste0(doc_id, ".xml"))
+  writeBin(content(resp, "raw"), outfile)
+  return(outfile)
+}
+
+# --------------------
+# Main
+# --------------------
+all_urls <- unlist(lapply(years, function(y) get_docs_in_year(y, series)))
+message("Total documents found: ", length(all_urls))
+
+downloaded <- lapply(all_urls, download_doc)
+
+message("Done! Files saved in ./uk_legislation/")
+
+
+
+```
+gesetze-im-internet.unique.de.txt
+
+
+```{r}
+belgian_df <- read.csv("/Users/jonathankellogg/Desktop/dataset/articles.csv")
+
+library(stringr)
+
+# Read the whole file as a single string
+text <- paste(readLines("/Users/jonathankellogg/Desktop/dataset/gesetze-im-internet.unique.de.txt"), collapse = " ")
+
+
+# Split into sentences using regex for punctuation followed by space
+sentences <- unlist(str_split(text, "(?<=[.!?])\\s+"))
+
+# View first few sentences
+head(sentences)
+
+German_df <- data.frame(sentence = sentences, stringsAsFactors = FALSE)
+head(df)
+```
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+
+API_KEY <- "9f5c26ce7865f023adee8fdeb8619102"
+BASE_URL <- "https://api.legiscan.com/"
+
+# ---- API Helper Functions ----
+
+get_sessions <- function() {
+  resp <- GET(BASE_URL, query = list(
+    key = API_KEY,
+    op = "getSessionList",
+    state = "US"
+  ))
+  content(resp, "parsed", simplifyVector = TRUE)
+}
+
+get_masterlist <- function(session_id) {
+  resp <- GET(BASE_URL, query = list(
+    key = API_KEY,
+    op = "getMasterList",
+    id = session_id
+  ))
+  content(resp, "parsed", simplifyVector = FALSE)
+}
+
+get_bill <- function(bill_id) {
+  resp <- GET(BASE_URL, query = list(
+    key = API_KEY,
+    op = "getBill",
+    id = bill_id
+  ))
+  content(resp, "parsed", simplifyVector = FALSE)
+}
+
+# Helper: safely extract values, replace NULL with NA
+safe_extract <- function(x, field) {
+  if (!is.null(x[[field]])) {
+    return(x[[field]])
+  } else {
+    return(NA)
+  }
+}
+
+# ---- Main Workflow ----
+
+sessions <- get_sessions()
+latest_session_id <- tail(sessions$sessions$session_id, 1)
+
+bills_raw <- get_masterlist(latest_session_id)
+bills <- bills_raw$masterlist
+
+# Keep only bill entries (skip "session")
+bill_entries <- bills[sapply(bills, function(x) is.list(x) && "bill_id" %in% names(x))]
+
+# Build metadata dataframe safely
+bills_df <- bind_rows(lapply(bill_entries, function(x) {
+  data.frame(
+    bill_id     = safe_extract(x, "bill_id"),
+    number      = safe_extract(x, "number"),
+    title       = safe_extract(x, "title"),
+    description = safe_extract(x, "description"),
+    status      = safe_extract(x, "status"),
+    updated     = safe_extract(x, "last_action_date"),
+    stringsAsFactors = FALSE
+  )
+}))
+
+# Fetch full text (latest version) for each bill
+get_bill_text_safe <- function(bill_id) {
+  bill_data <- get_bill(bill_id)
+  bill <- bill_data$bill
+  if (!is.null(bill$texts) && length(bill$texts) > 0) {
+    latest_text <- bill$texts[[length(bill$texts)]]
+    return(latest_text$text)  # returns plain text if available
+  }
+  return(NA)
+}
+
+# ⚠️ This will be slow for all bills. You can test on the first 10.
+bills_df$full_text <- sapply(bills_df$bill_id, get_bill_text_safe)
+
+# Save dataset
+write.csv(bills_df, "us_congress_bills_with_text.csv", row.names = FALSE)
+
+head(bills_df[, c("bill_id", "number", "title", "status", "full_text")])
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+library(httr)
+library(rvest)
+library(dplyr)
+
+#Start with one bill for now
+#I'm having trouble download entire bills so some pointers would be much appreciated :). 
+
+#load the data
+url <- "https://www.govinfo.gov/content/pkg/BILLS-104hconres200ih/html/BILLS-104hconres200ih.htm"
+
+#get the information from the URL
+response <- GET(url)
+  html_content <- content(response, "text")
+  parsed_html <- read_html(html_content)
+  text_data <- html_text(parsed_html)
+  
+  # Convert text into a data frame (split by new lines)
+  df <- data.frame(text = unlist(strsplit(text_data, "\n")), stringsAsFactors = FALSE)
+  
+  # Remove empty rows
+  df <- df %>% filter(text != "")
+  
+  print(head(df, 10))  # Preview first 10 rows
+
+
+```
+
+
+# Remove stopwords and tokenize the sentences
+df_clean <- df %>%
+  mutate(text = tolower(text)) %>%  # Convert to lowercase
+  unnest_tokens(word, text) %>%  # Tokenize
+  filter(!word %in% stopwords("en"))  # Remove stopwords
+
+# View the resulting data frame
+print(df_clean)
+
+```
+
+## Match to example code book
+
+```{r}
+# Example codebook: Mapping policy areas to keywords
+# Again finding and downloading 
+codebook <- data.frame(
+  policy_area = c("Health", "Environment", "Education", "Economic Development"),
+  keywords = c("healthcare, illness, disease, doctor, hospital",
+               "climate, environment, pollution, green, sustainability",
+               "school, education, teacher, student, learning",
+               "economy, job, unemployment, growth, business")
+)
+
+# Split the keywords into lists for easier matching
+codebook$keywords <- strsplit(codebook$keywords, ", ")
+
+# Function to assign policy areas based on token matches
+assign_policy_area <- function(tokens, codebook) {
+  # Check each set of keywords against the tokens
+  policy_matches <- sapply(codebook$keywords, function(keywords) {
+    # Return TRUE if any of the keywords in the set matches a token
+    any(keywords %in% tokens)  
+  })
+  
+  # Get the matching policy areas
+  matched_policy_areas <- codebook$policy_area[policy_matches]
+  
+  if (length(matched_policy_areas) == 0) {
+    return(NA)  # Return NA if no matches are found
+  }
+  
+  # Return matched policy areas (could be multiple)
+  return(paste(matched_policy_areas, collapse = ", "))
+}
+
+# Apply the function to each row of the data frame
+df$policy_area <- sapply(df$text, function(text) {
+  # Tokenize the text into words
+  tokens <- unlist(strsplit(tolower(text), "\\s+"))  # Tokenize into lowercase words
+  # Assign policy area based on the tokens
+  assign_policy_area(tokens, codebook)
+})
+
+# View the updated data frame with policy area
+print(df)
+```
+
+
+
+
+## Supervised classification through dictionary
+
+
+## Unsupervised classification
+
+
+## Text analysis
