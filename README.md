@@ -10,3 +10,8 @@ If you use the dataset or code for your own research or related projects, please
 All code is available in this GitHub repository, and the datasets used in the project can be found here:
 https://drive.google.com/drive/folders/1qhlCgEDZf6_V5UZm3bGnyvRdhsjHgEl5?usp=drive_link
 
+The analysis relies on a newly constructed dataset that integrates three large-
+scale legislative corpora from the United States, the European Union, and
+France. Specifically, the dataset merges materials introduced by Kornilova
+and Eidelman (2019), Laurer and Borrett (2020), and Harvard Library Innova-
+tion Lab (2024), respectively. 
