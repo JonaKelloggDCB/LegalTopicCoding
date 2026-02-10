@@ -13,5 +13,4 @@ https://drive.google.com/drive/folders/1qhlCgEDZf6_V5UZm3bGnyvRdhsjHgEl5?usp=dri
 The analysis relies on a newly constructed dataset that integrates three large-
 scale legislative corpora from the United States, the European Union, and
 France. Specifically, the dataset merges materials introduced by Kornilova
-and Eidelman (2019), Laurer and Borrett (2020), and Harvard Library Innova-
-tion Lab (2024), respectively. 
+and Eidelman (2019), Laurer and Borrett (2020), and Harvard Library Innovation Lab (2024), respectively. 
