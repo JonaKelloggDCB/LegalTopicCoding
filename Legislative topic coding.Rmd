@@ -617,11 +617,11 @@ df_all$section_label <- vapply(df_all$section, assign_label, character(1), keywo
 df_all$title_label   <- vapply(df_all$title,   assign_label, character(1), keyword_map)
 ```
 
-# Remove text variable to make the text less computationally heavy
+# Remove text an section variable to make the file less computationally heavy
 
 ```{r}
-library(dplyr)
-df_all <- df_all %>% select(-text)
+df_all <- df_all %>%
+  select(-text, -section)
 ```
 
 #Save the dataset
