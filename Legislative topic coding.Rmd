@@ -375,6 +375,81 @@ df_all$divergence_vs_title[valid] <-
   )
 ```
 
+# Run independently for France
+
+Due to difference in column names
+
+```{r}
+library(dplyr)
+library(text2vec)
+library(Matrix)
+
+# --- Filter to France ---
+df_france <- df_all %>%
+  filter(country == "France")
+
+# --- Guards ---
+stopifnot(
+  "text"  %in% names(df_france),
+  "title" %in% names(df_france)
+)
+
+# --- Build corpus: text then title (row-aligned) ---
+corpus <- c(df_france$text, df_france$title)
+
+it <- itoken(
+  corpus,
+  tokenizer = word_tokenizer,
+  progressbar = TRUE
+)
+
+VOCAB_TERM_MAX <- 3000
+vocab <- create_vocabulary(it, vocab_term_max = VOCAB_TERM_MAX)
+
+if (nrow(vocab) == 0) {
+  stop("Vocabulary is empty after tokenization. Check that `text`/`title` contain text.")
+}
+
+vectorizer <- vocab_vectorizer(vocab)
+dtm <- create_dtm(it, vectorizer)
+
+tfidf <- TfIdf$new()
+tfidf_mat <- tfidf$fit_transform(dtm)
+
+# Ensure sparse matrix stays 2D
+tfidf_mat <- as(tfidf_mat, "dgCMatrix")
+
+n <- nrow(df_france)
+
+text_mat  <- tfidf_mat[1:n, , drop = FALSE]
+title_mat <- tfidf_mat[(n + 1):(2 * n), , drop = FALSE]
+
+# Guard: if no columns, cannot compute distances
+if (ncol(text_mat) == 0) {
+  stop("DTM/TF-IDF has 0 columns (no terms survived). Check text content or vocab size.")
+}
+
+# --- Vectorised cosine distance ---
+text_len  <- sqrt(Matrix::rowSums(text_mat  * text_mat))
+title_len <- sqrt(Matrix::rowSums(title_mat * title_mat))
+
+valid <- (text_len > 0) & (title_len > 0)
+
+df_france$divergence_vs_title <- NA_real_
+df_france$divergence_vs_title[valid] <-
+  1 - Matrix::rowSums(
+    (text_mat[valid, , drop = FALSE]  / text_len[valid]) *
+    (title_mat[valid, , drop = FALSE] / title_len[valid])
+  )
+
+# --- Merge back into df_all ---
+df_all$divergence_vs_title[df_all$country == "France"] <-
+  df_france$divergence_vs_title
+
+
+
+```
+
 ```{r}
 
 # Validity regressions (individual + combined) 
