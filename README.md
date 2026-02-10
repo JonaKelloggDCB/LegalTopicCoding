@@ -7,7 +7,7 @@ By examining these strategic choices, the project sheds light on how disjointed 
 The accompanying code is designed to be adaptable to different legislative contexts, provided the underlying data are appropriately prepared. 
 If you use the dataset or code for your own research or related projects, please feel free to reach out with questions or to share any interesting findings.
 
-All code is available in this GitHub repository, and the datasets used in the project can be found here:
+All code is available in this GitHub repository, and the final dataset used in the project can be found here:
 https://drive.google.com/drive/folders/1qhlCgEDZf6_V5UZm3bGnyvRdhsjHgEl5?usp=drive_link
 
 The analysis relies on a newly constructed dataset that integrates three large-
