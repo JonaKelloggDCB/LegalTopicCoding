@@ -617,20 +617,16 @@ df_all$section_label <- vapply(df_all$section, assign_label, character(1), keywo
 df_all$title_label   <- vapply(df_all$title,   assign_label, character(1), keyword_map)
 ```
 
-# ============================================================
-# Legislative Text Analysis Pipeline
-# ============================================================
-# Includes:
-# 1. Random sample LaTeX validation
-# 2. External law parsing + CSV export
-# 3. TF-IDF semantic divergence
-# 4. Extreme divergence LaTeX table
-# 5. Data quality diagnostics (word counts)
-# ============================================================
+Validity check
+ Includes:
+1. Random sample LaTeX validation
+2. External law parsing + CSV export
+3. Data quality diagnostics (word counts)
 
-# -----------------------------
+
+```{r}
 # Libraries
-# -----------------------------
+
 
 library(dplyr)
 library(stringr)
@@ -641,10 +637,6 @@ library(Matrix)
 library(ggplot2)
 library(knitr)
 library(kableExtra)
-
-# ============================================================
-# 1. Utility Functions
-# ============================================================
 
 escape_latex <- function(x) {
   str_replace_all(x, "([%&_#])", "\\\\\\1")
@@ -660,9 +652,11 @@ read_law_text <- function(path) {
         collapse = "\n")
 }
 
-# ============================================================
-# 2. Random Sample Validation (LaTeX Export)
-# ============================================================
+```
+
+# Random Sample Validation (LaTeX Export)
+
+```{r}
 
 build_sample_latex_table <- function(df, output_path,
                                      seed = 123,
@@ -730,9 +724,40 @@ paste(latex_groups$tex, collapse = "\n"),
   writeLines(latex_table, output_path)
 }
 
-# ============================================================
-# 3. External Validation: Law Parsing
-# ============================================================
+```
+# External Validation: Law Parsing
+
+```{r}
+# ------------------------------------------------------------
+# Libraries
+# ------------------------------------------------------------
+
+library(dplyr)
+library(stringr)
+library(readr)
+library(text2vec)
+library(Matrix)
+library(knitr)
+library(kableExtra)
+
+#EDIT THESE
+
+aca_path   <- "data/raw/aca.txt"
+tcja_path  <- "data/raw/tcja.txt"
+gdpr_path  <- "data/raw/gdpr.txt"
+bbb_path   <- "data/raw/bbb.txt"   
+
+
+read_law_text <- function(path) {
+  paste(readLines(path, encoding = "UTF-8", warn = FALSE),
+        collapse = "\n")
+}
+
+aca_text  <- read_law_text(aca_path)
+tcja_text <- read_law_text(tcja_path)
+gdpr_text <- read_law_text(gdpr_path)
+bbb_text  <- read_law_text(bbb_path)   
+
 
 parse_us_law <- function(text, law_title) {
 
@@ -747,9 +772,9 @@ parse_us_law <- function(text, law_title) {
   )[[1]]
 
   tibble(
-    law_title   = law_title,
-    section_id  = str_trim(section_ids),
-    section_full = str_trim(sections[-1])
+    law_title    = law_title,
+    section_id   = str_trim(section_ids),
+    section_full = str_squish(sections[-1])
   )
 }
 
@@ -766,37 +791,19 @@ parse_gdpr <- function(text, law_title) {
   )[[1]]
 
   tibble(
-    law_title   = law_title,
-    section_id  = str_trim(article_ids),
-    section_full = str_trim(articles[-1])
+    law_title    = law_title,
+    section_id   = str_trim(article_ids),
+    section_full = str_squish(articles[-1])
   )
 }
+aca_df  <- parse_us_law(aca_text,  "Affordable Care Act (2010)")
+tcja_df <- parse_us_law(tcja_text, "Tax Cuts and Jobs Act (2017)")
+bbb_df  <- parse_us_law(bbb_text,  "One Big Beautiful Bill Act")  # ← Added
+gdpr_df <- parse_gdpr(gdpr_text,   "EU General Data Protection Regulation (2016)")
 
-parse_laws <- function(law_files) {
-
-  law_files %>%
-    mutate(
-      text = map(file_path, read_law_text),
-      parsed = pmap(
-        list(text, law_title),
-        function(text, law_title) {
-          if (str_detect(law_title, "General Data Protection Regulation")) {
-            parse_gdpr(text, law_title)
-          } else {
-            parse_us_law(text, law_title)
-          }
-        }
-      )
-    ) %>%
-    pull(parsed) %>%
-    bind_rows() %>%
-    mutate(section_full = str_squish(section_full)) %>%
-    filter(section_full != "")
-}
-
-# ============================================================
-# 4. Semantic Divergence (TF-IDF Cosine Distance)
-# ============================================================
+# Combine all laws
+laws_df <- bind_rows(aca_df, tcja_df, bbb_df, gdpr_df) %>%
+  filter(section_full != "")
 
 compute_semantic_divergence <- function(df,
                                         text_col = "section_full",
@@ -834,10 +841,6 @@ compute_semantic_divergence <- function(df,
   divergence
 }
 
-# ============================================================
-# 5. Extreme Divergence LaTeX Table
-# ============================================================
-
 build_extreme_table <- function(df, output_path) {
 
   df %>%
@@ -861,10 +864,11 @@ build_extreme_table <- function(df, output_path) {
     writeLines(output_path)
 }
 
-# ============================================================
-# 6. Data Quality: Word Count Diagnostics
-# ============================================================
 
+```{r}
+
+# 3. Data Quality: Word Count Diagnostics
+```
 compute_word_length <- function(df) {
 
   df %>%
@@ -891,12 +895,28 @@ plot_word_density <- function(df, output_file, log_scale = FALSE) {
 
   ggsave(output_file, p, width = 8, height = 6, dpi = 300)
 }
+```
+
+# Remove all observations where section is less than 10 words an section
+
+```{r}
+df_all <- df_all %>%
+  mutate(
+    section_word_count = str_count(section, "\\S+")
+  ) %>%
+  filter(
+    !is.na(section),
+    section_word_count >= 10
+  ) %>%
+  select(-section_word_count)
+```
 
 # Remove text an section variable to make the file less computationally heavy
 
 ```{r}
 df_all <- df_all %>%
   select(-text, -section)
+
 ```
 
 #Save the dataset
