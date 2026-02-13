@@ -617,6 +617,281 @@ df_all$section_label <- vapply(df_all$section, assign_label, character(1), keywo
 df_all$title_label   <- vapply(df_all$title,   assign_label, character(1), keyword_map)
 ```
 
+# ============================================================
+# Legislative Text Analysis Pipeline
+# ============================================================
+# Includes:
+# 1. Random sample LaTeX validation
+# 2. External law parsing + CSV export
+# 3. TF-IDF semantic divergence
+# 4. Extreme divergence LaTeX table
+# 5. Data quality diagnostics (word counts)
+# ============================================================
+
+# -----------------------------
+# Libraries
+# -----------------------------
+
+library(dplyr)
+library(stringr)
+library(purrr)
+library(readr)
+library(text2vec)
+library(Matrix)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+
+# ============================================================
+# 1. Utility Functions
+# ============================================================
+
+escape_latex <- function(x) {
+  str_replace_all(x, "([%&_#])", "\\\\\\1")
+}
+
+extract_first_sentences <- function(text, n = 2) {
+  sentences <- str_split(text, "(?<=[.!?])\\s+")
+  map_chr(sentences, ~ paste(head(.x, n), collapse = " "))
+}
+
+read_law_text <- function(path) {
+  paste(readLines(path, encoding = "UTF-8", warn = FALSE),
+        collapse = "\n")
+}
+
+# ============================================================
+# 2. Random Sample Validation (LaTeX Export)
+# ============================================================
+
+build_sample_latex_table <- function(df, output_path,
+                                     seed = 123,
+                                     n_laws = 10) {
+
+  set.seed(seed)
+
+  sampled_titles <- df %>%
+    distinct(title) %>%
+    slice_sample(n = n_laws) %>%
+    pull(title)
+
+  df_prepped <- df %>%
+    filter(title %in% sampled_titles) %>%
+    mutate(
+      section_short = extract_first_sentences(section, 2),
+      divergence_vs_title = round(divergence_vs_title, 2),
+      hiddenness_textual  = round(hiddenness_textual, 2)
+    ) %>%
+    arrange(title, divergence_vs_title)
+
+  latex_groups <- df_prepped %>%
+    group_by(title) %>%
+    summarise(
+      tex = paste0(
+        "\\addlinespace\n",
+        "\\multicolumn{3}{l}{\\textbf{",
+        escape_latex(unique(title)),
+        "} (", unique(text_sentences), " sentences)} \\\\\n",
+        "\\addlinespace\n",
+        paste0(
+          escape_latex(section_short),
+          " & ",
+          divergence_vs_title,
+          " & ",
+          hiddenness_textual,
+          " \\\\",
+          collapse = "\n"
+        ),
+        "\n"
+      ),
+      .groups = "drop"
+    )
+
+  latex_table <- paste0(
+"\\begin{longtable}{
+>{\\RaggedRight\\arraybackslash}p{9cm}
+>{\\centering\\arraybackslash}p{1.4cm}
+>{\\centering\\arraybackslash}p{1.4cm}
+}
+\\toprule
+Section (first 2 sentences) & Divergence & Hiddenness \\\\
+\\midrule
+\\endfirsthead
+\\toprule
+Section (first 2 sentences) & Divergence & Hiddenness \\\\
+\\midrule
+\\endhead
+",
+paste(latex_groups$tex, collapse = "\n"),
+"\\bottomrule
+\\end{longtable}"
+  )
+
+  writeLines(latex_table, output_path)
+}
+
+# ============================================================
+# 3. External Validation: Law Parsing
+# ============================================================
+
+parse_us_law <- function(text, law_title) {
+
+  section_ids <- str_extract_all(
+    text,
+    regex("\\nSEC\\.\\s+[0-9A-Za-z\\.\\-]+", ignore_case = TRUE)
+  )[[1]]
+
+  sections <- str_split(
+    text,
+    regex("\\nSEC\\.\\s+[0-9A-Za-z\\.\\-]+", ignore_case = TRUE)
+  )[[1]]
+
+  tibble(
+    law_title   = law_title,
+    section_id  = str_trim(section_ids),
+    section_full = str_trim(sections[-1])
+  )
+}
+
+parse_gdpr <- function(text, law_title) {
+
+  article_ids <- str_extract_all(
+    text,
+    regex("\\nArticle\\s+[0-9]+", ignore_case = TRUE)
+  )[[1]]
+
+  articles <- str_split(
+    text,
+    regex("\\nArticle\\s+[0-9]+", ignore_case = TRUE)
+  )[[1]]
+
+  tibble(
+    law_title   = law_title,
+    section_id  = str_trim(article_ids),
+    section_full = str_trim(articles[-1])
+  )
+}
+
+parse_laws <- function(law_files) {
+
+  law_files %>%
+    mutate(
+      text = map(file_path, read_law_text),
+      parsed = pmap(
+        list(text, law_title),
+        function(text, law_title) {
+          if (str_detect(law_title, "General Data Protection Regulation")) {
+            parse_gdpr(text, law_title)
+          } else {
+            parse_us_law(text, law_title)
+          }
+        }
+      )
+    ) %>%
+    pull(parsed) %>%
+    bind_rows() %>%
+    mutate(section_full = str_squish(section_full)) %>%
+    filter(section_full != "")
+}
+
+# ============================================================
+# 4. Semantic Divergence (TF-IDF Cosine Distance)
+# ============================================================
+
+compute_semantic_divergence <- function(df,
+                                        text_col = "section_full",
+                                        title_col = "law_title",
+                                        vocab_max = 3000) {
+
+  corpus <- c(df[[text_col]], df[[title_col]])
+  it <- itoken(corpus, tokenizer = word_tokenizer, progressbar = TRUE)
+
+  vocab <- create_vocabulary(it, vocab_term_max = vocab_max)
+  vectorizer <- vocab_vectorizer(vocab)
+  dtm <- create_dtm(it, vectorizer)
+
+  tfidf <- TfIdf$new()
+  tfidf_mat <- as(tfidf$fit_transform(dtm), "dgCMatrix")
+
+  n <- nrow(df)
+
+  sec_mat   <- tfidf_mat[1:n, ]
+  title_mat <- tfidf_mat[(n + 1):(2 * n), ]
+
+  sec_len   <- sqrt(rowSums(sec_mat * sec_mat))
+  title_len <- sqrt(rowSums(title_mat * title_mat))
+
+  valid <- (sec_len > 0) & (title_len > 0)
+
+  divergence <- rep(NA_real_, n)
+
+  divergence[valid] <-
+    1 - rowSums(
+      (sec_mat[valid, ] / sec_len[valid]) *
+      (title_mat[valid, ] / title_len[valid])
+    )
+
+  divergence
+}
+
+# ============================================================
+# 5. Extreme Divergence LaTeX Table
+# ============================================================
+
+build_extreme_table <- function(df, output_path) {
+
+  df %>%
+    group_by(law_title) %>%
+    arrange(semantic_divergence, .by_group = TRUE) %>%
+    mutate(extreme = case_when(
+      row_number() <= 5 ~ "Least divergent",
+      row_number() > n() - 5 ~ "Most divergent",
+      TRUE ~ NA_character_
+    )) %>%
+    filter(!is.na(extreme)) %>%
+    ungroup() %>%
+    select(law_title, extreme, section_full, semantic_divergence) %>%
+    kable(
+      format   = "latex",
+      booktabs = TRUE,
+      escape   = TRUE,
+      caption  = "Most and least semantically divergent sections by law"
+    ) %>%
+    kable_styling(latex_options = "hold_position", font_size = 9) %>%
+    writeLines(output_path)
+}
+
+# ============================================================
+# 6. Data Quality: Word Count Diagnostics
+# ============================================================
+
+compute_word_length <- function(df) {
+
+  df %>%
+    mutate(
+      word_length = case_when(
+        country == "France" ~ str_count(text, "\\S+"),
+        TRUE ~ str_count(section, "\\S+")
+      )
+    ) %>%
+    filter(!is.na(word_length), word_length >= 10)
+}
+
+plot_word_density <- function(df, output_file, log_scale = FALSE) {
+
+  p <- ggplot(df, aes(x = word_length, fill = country)) +
+    geom_density(alpha = 0.4) +
+    theme_minimal()
+
+  if (log_scale) {
+    p <- p + scale_x_log10()
+  } else {
+    p <- p + coord_cartesian(xlim = c(10, 1500))
+  }
+
+  ggsave(output_file, p, width = 8, height = 6, dpi = 300)
+}
+
 # Remove text an section variable to make the file less computationally heavy
 
 ```{r}
